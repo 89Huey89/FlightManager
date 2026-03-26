@@ -263,6 +263,11 @@ input:focus, select:focus { border-color: var(--border-focus); }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 .animate-in { animation: fadeIn 0.3s ease forwards; }
 
+/* Data tab */
+.btn-gold { background: var(--gold); color: #fff; }
+.btn-gold:hover { background: #A3822E; }
+.data-section-desc { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin-bottom: 16px; }
+
 @media (max-width: 480px) {
   .tab-btn span { display: none; }
   .tab-btn svg { width: 18px; height: 18px; }
@@ -299,6 +304,9 @@ const icons = {
   target: icon([h("circle",{key:0,cx:12,cy:12,r:10}),h("circle",{key:1,cx:12,cy:12,r:6}),h("circle",{key:2,cx:12,cy:12,r:2})]),
   trophy: icon([h("path",{key:0,d:"M6 9H4.5a2.5 2.5 0 0 1 0-5H6"}),h("path",{key:1,d:"M18 9h1.5a2.5 2.5 0 0 0 0-5H18"}),h("path",{key:2,d:"M4 22h16"}),h("path",{key:3,d:"M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"}),h("path",{key:4,d:"M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"}),h("path",{key:5,d:"M18 2H6v7a6 6 0 0 0 12 0V2Z"})]),
   arrowDown: icon([h("path",{key:0,d:"m6 9 6 6 6-6"})]),
+  download: icon([h("path",{key:0,d:"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"}),h("polyline",{key:1,points:"7 10 12 15 17 10"}),h("line",{key:2,x1:12,y1:15,x2:12,y2:3})]),
+  upload: icon([h("path",{key:0,d:"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"}),h("polyline",{key:1,points:"17 8 12 3 7 8"}),h("line",{key:2,x1:12,y1:3,x2:12,y2:15})]),
+  database: icon([h("ellipse",{key:0,cx:12,cy:5,rx:9,ry:3}),h("path",{key:1,d:"M3 5V19A9 3 0 0 0 21 19V5"}),h("path",{key:2,d:"M3 12A9 3 0 0 0 21 12"})]),
 };
 
 // ── Data ──
@@ -309,6 +317,56 @@ const defaultState = {
 };
 function load() { try { const d = localStorage.getItem(STORAGE_KEY); return d ? JSON.parse(d) : null; } catch { return null; } }
 function save(d) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } catch {} }
+
+// ── Import/Export Helpers ──
+function downloadFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; document.body.appendChild(a);
+  a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+function exportJSON(data) {
+  const date = new Date().toISOString().split("T")[0];
+  downloadFile("flight-planer-backup-" + date + ".json", JSON.stringify(data, null, 2), "application/json");
+}
+
+function exportMembersCSV(members) {
+  const date = new Date().toISOString().split("T")[0];
+  const lines = ["Id;Name"];
+  members.forEach(m => lines.push(m.id + ";" + m.name.replace(/;/g, ",")));
+  downloadFile("flight-planer-mitglieder-" + date + ".csv", "\uFEFF" + lines.join("\n"), "text/csv;charset=utf-8");
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsText(file);
+  });
+}
+
+function validateBackup(obj) {
+  return obj && Array.isArray(obj.members) && Array.isArray(obj.constraints)
+    && Array.isArray(obj.weeks) && typeof obj.pairingHistory === "object"
+    && typeof obj.settings === "object" && typeof obj.nextMemberId === "number";
+}
+
+function parseCSVMembers(text) {
+  const clean = text.replace(/^\uFEFF/, "");
+  const delim = (clean.split("\n")[0] || "").includes(";") ? ";" : ",";
+  const lines = clean.split(/\r?\n/).filter(l => l.trim());
+  const first = lines[0].toLowerCase().trim();
+  const hasHeader = first.includes("name") || first.includes("id");
+  const dataLines = hasHeader ? lines.slice(1) : lines;
+  return dataLines.map(line => {
+    const parts = line.split(delim).map(s => s.trim().replace(/^"|"$/g, ""));
+    if (parts.length >= 2 && /^\d+$/.test(parts[0])) return parts[1];
+    return parts[0];
+  }).filter(n => n && n.length > 0);
+}
 
 // ── Algorithm ──
 function pairKey(a, b) { return a < b ? a+"-"+b : b+"-"+a; }
@@ -725,6 +783,119 @@ function StatsTab({ data }) {
   );
 }
 
+// ── Data Tab ──
+function DataTab({ data, setData }) {
+  const jsonInputRef = React.useRef(null);
+  const csvInputRef = React.useRef(null);
+
+  const handleJSONImport = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await readFileAsText(file);
+      const parsed = JSON.parse(text);
+      if (!validateBackup(parsed)) { alert("Ungültige Backup-Datei. Die Datei enthält nicht alle erforderlichen Daten."); return; }
+      if (!confirm("Alle aktuellen Daten werden durch das Backup ersetzt. Fortfahren?")) return;
+      setData(parsed);
+      alert("Backup erfolgreich importiert!");
+    } catch { alert("Fehler beim Lesen der Datei. Bitte eine gültige JSON-Datei wählen."); }
+    e.target.value = "";
+  };
+
+  const handleCSVImport = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await readFileAsText(file);
+      const names = parseCSVMembers(text);
+      if (names.length === 0) { alert("Keine Mitglieder in der CSV-Datei gefunden."); return; }
+      const existingNames = new Set(data.members.map(m => m.name.toLowerCase()));
+      const newNames = names.filter(n => !existingNames.has(n.toLowerCase()));
+      if (newNames.length === 0) { alert("Alle " + names.length + " Mitglieder aus der Datei sind bereits vorhanden."); return; }
+      const msg = newNames.length + " neue Mitglieder gefunden" +
+        (names.length - newNames.length > 0 ? " (" + (names.length - newNames.length) + " bereits vorhanden)" : "") +
+        ".\n\nNeue Mitglieder:\n" + newNames.join(", ") + "\n\nHinzufügen?";
+      if (!confirm(msg)) return;
+      setData(d => {
+        let nextId = d.nextMemberId;
+        const added = newNames.map(n => ({ id: nextId++, name: n }));
+        return {
+          ...d,
+          members: [...d.members, ...added].sort((a, b) => a.name.localeCompare(b.name, "de")),
+          nextMemberId: nextId,
+        };
+      });
+      alert(newNames.length + " Mitglieder erfolgreich importiert!");
+    } catch { alert("Fehler beim Lesen der CSV-Datei."); }
+    e.target.value = "";
+  };
+
+  const startNewSeason = () => {
+    if (data.weeks.length === 0) { alert("Es gibt keine Spieltage zum Zurücksetzen."); return; }
+    if (!confirm("Neue Saison starten?\n\nEs wird automatisch ein Backup heruntergeladen.\nDanach werden alle Spieltage und die Paarungshistorie gelöscht.\nMitglieder und Ausschlüsse bleiben erhalten.")) return;
+    exportJSON(data);
+    setData(d => ({ ...d, weeks: [], pairingHistory: {} }));
+    alert("Neue Saison gestartet! Backup wurde heruntergeladen.");
+  };
+
+  return h("div", { className: "animate-in" },
+    // Hidden file inputs
+    h("input", { type: "file", accept: ".json", ref: jsonInputRef, style: { display: "none" }, onChange: handleJSONImport }),
+    h("input", { type: "file", accept: ".csv,.txt", ref: csvInputRef, style: { display: "none" }, onChange: handleCSVImport }),
+
+    // Card 1: Full Backup
+    h("div", { className: "card" },
+      h("div", { className: "card-title" }, "Vollständiges Backup"),
+      h("p", { className: "data-section-desc" },
+        "Sichern und Wiederherstellen aller Daten (Mitglieder, Ausschlüsse, Spieltage, Statistiken)."
+      ),
+      h("div", { className: "flex-row" },
+        h("button", { className: "btn btn-primary", onClick: () => exportJSON(data) },
+          h(icons.download, { size: 15 }), "Backup exportieren"
+        ),
+        h("button", { className: "btn btn-outline", onClick: () => jsonInputRef.current.click() },
+          h(icons.upload, { size: 15 }), "Backup importieren"
+        )
+      )
+    ),
+
+    // Card 2: Members CSV
+    h("div", { className: "card" },
+      h("div", { className: "card-title" }, "Mitglieder CSV"),
+      h("p", { className: "data-section-desc" },
+        "Mitgliederliste als CSV exportieren oder neue Mitglieder aus einer CSV-Datei importieren. Bereits vorhandene Mitglieder werden übersprungen."
+      ),
+      h("div", { className: "flex-row" },
+        h("button", { className: "btn btn-primary", onClick: () => exportMembersCSV(data.members), disabled: data.members.length === 0 },
+          h(icons.download, { size: 15 }), "Mitglieder exportieren"
+        ),
+        h("button", { className: "btn btn-outline", onClick: () => csvInputRef.current.click() },
+          h(icons.upload, { size: 15 }), "Mitglieder importieren"
+        )
+      ),
+      data.members.length > 0 && h("div", { className: "meta", style: { marginTop: 12 } },
+        data.members.length + " Mitglieder · CSV-Format: Id;Name"
+      )
+    ),
+
+    // Card 3: New Season
+    h("div", { className: "card" },
+      h("div", { className: "card-title" }, "Neue Saison"),
+      h("p", { className: "data-section-desc" },
+        "Startet eine neue Saison. Alle Spieltage und die Paarungshistorie werden zurückgesetzt. Mitglieder und Ausschlüsse bleiben erhalten. Vorher wird automatisch ein Backup erstellt."
+      ),
+      h("div", { className: "flex-row" },
+        h("button", { className: "btn btn-gold btn-lg", onClick: startNewSeason },
+          h(icons.trophy, { size: 16 }), "Neue Saison starten"
+        )
+      ),
+      data.weeks.length > 0 && h("div", { className: "meta", style: { marginTop: 12 } },
+        "Aktuelle Saison: " + data.weeks.length + " Spieltage gespeichert"
+      )
+    )
+  );
+}
+
 // ── Tabs Config ──
 const tabConfig = [
   { id: "week", label: "Spieltag", Icon: icons.flag },
@@ -732,6 +903,7 @@ const tabConfig = [
   { id: "constraints", label: "Ausschlüsse", Icon: icons.ban },
   { id: "stats", label: "Statistik", Icon: icons.barChart },
   { id: "history", label: "Historie", Icon: icons.history },
+  { id: "data", label: "Daten", Icon: icons.database },
 ];
 
 // ── App ──
@@ -759,7 +931,8 @@ function App() {
     tab === "constraints" && h(ConstraintsTab, { data, setData }),
     tab === "week" && h(WeekTab, { data, setData }),
     tab === "stats" && h(StatsTab, { data }),
-    tab === "history" && h(HistoryTab, { data, setData })
+    tab === "history" && h(HistoryTab, { data, setData }),
+    tab === "data" && h(DataTab, { data, setData })
   );
 }
 
